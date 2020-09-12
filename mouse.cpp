@@ -99,11 +99,6 @@ void MouseController::hid_input_end()
 
 void MouseController::mouseDataClear() {
 	mouseEvent = false;
-	buttons = 0;
-	mouseX  = 0;
-	mouseY  = 0;
-	wheel   = 0;
-	wheelH  = 0;
 }
 
 
