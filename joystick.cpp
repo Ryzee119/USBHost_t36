@@ -239,8 +239,8 @@ bool JoystickController::setRumble(uint8_t lValue, uint8_t rValue, uint8_t timeo
 			txbuf_[5] = 0x0f; // Rumble mask (what motors are activated) (0000 lT rT L R)
 			txbuf_[6] = 0x0; // lT force
 			txbuf_[7] = 0x0; // rT force
-			txbuf_[8] = lValue; // L force
-			txbuf_[9] = rValue; // R force
+			txbuf_[8] = (lValue > 100) ? 100 : lValue; // L force
+			txbuf_[9] = (rValue > 100) ? 100 : rValue; // R force
 			txbuf_[10] = 0xff; // Length of pulse
 			txbuf_[11] = 0x00; // Period between pulses			
 			txbuf_[12] = 0x00; // Repeat			
