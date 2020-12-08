@@ -336,6 +336,13 @@ bool JoystickController::setLEDs(uint8_t lr, uint8_t lg, uint8_t lb)
 	return false;
 }
 
+bool JoystickController::sendRaw(uint8_t *data, uint8_t len) {
+	if (len < sizeof(txbuf_))
+		memcpy(txbuf_, data, len);
+
+	return queue_Data_Transfer(txpipe_, data, len, this);
+}
+
 bool JoystickController::transmitPS4UserFeedbackMsg() {
 	if (driver_)  {
 		uint8_t packet[32];
@@ -595,6 +602,13 @@ static  uint8_t xboxone_pdp_init2[] = {0x06, 0x30};
 static  uint8_t xboxone_pdp_init3[] = {0x06, 0x20, 0x00, 0x02, 0x01, 0x00};
 static  uint8_t xbox360w_inquire_present[] = {0x08, 0x00, 0x0F, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
 
+//Xbox360 Wireless Commands
+static uint8_t xbox360w_connection_refresh[] = {0x08, 0x00, 0x00, 0x00};
+static uint8_t xbox360w_controller_info[] = {0x00, 0x00, 0x00, 0x40};
+static uint8_t xbox360w_chatpad_init[] = {0x00, 0x00, 0x0C, 0x1B};
+static uint8_t xbox360w_chatpad_keepalive1[] = {0x00, 0x00, 0x0C, 0x1F};
+static uint8_t xbox360w_chatpad_keepalive2[] = {0x00, 0x00, 0x0C, 0x1E};
+
 bool JoystickController::claim(Device_t *dev, int type, const uint8_t *descriptors, uint32_t len)
 {
 	println("JoystickController claim this=", (uint32_t)this, HEX);
@@ -719,6 +733,7 @@ bool JoystickController::claim(Device_t *dev, int type, const uint8_t *descripto
 	} else if (jtype == XBOX360) {
 		queue_Data_Transfer(txpipe_, xbox360w_inquire_present, sizeof(xbox360w_inquire_present), this);
 		connected_ = 0;		// remember that hardware is actually connected...
+
 	} else if (jtype == XBOX360_WIRED) {
 		connected_ = true;
 		setLEDs(0);
@@ -726,7 +741,26 @@ bool JoystickController::claim(Device_t *dev, int type, const uint8_t *descripto
 	}
 	memset(axis, 0, sizeof(axis));	// clear out any data. 
 	DBGPrintf("   JoystickController::claim joystickType_ %d\n", joystickType_);
+	JoystickPeriodicTimer.start(2000000);
 	return true;
+}
+
+void JoystickController::timer_event(USBDriverTimer *whichTimer)
+{
+	if (whichTimer == &JoystickPeriodicTimer)
+	{
+		if (joystickType_ == XBOX360)
+		{
+			queue_Data_Transfer(txpipe_, xbox360w_connection_refresh, sizeof(xbox360w_connection_refresh), this);
+			queue_Data_Transfer(txpipe_, xbox360w_controller_info, sizeof(xbox360w_controller_info), this);
+			static int toggle = 1;
+			if (toggle ^=1)
+				queue_Data_Transfer(txpipe_, xbox360w_chatpad_keepalive1, sizeof(xbox360w_chatpad_keepalive1), this);
+			else
+				queue_Data_Transfer(txpipe_, xbox360w_chatpad_keepalive2, sizeof(xbox360w_chatpad_keepalive2), this);
+		}
+		JoystickPeriodicTimer.start(2000000);
+	}
 }
 
 void JoystickController::control(const Transfer_t *transfer)
@@ -808,10 +842,9 @@ static const uint8_t xbox_axis_order_mapping[] = {3, 4, 0, 1, 2, 5};
 
 void JoystickController::rx_data(const Transfer_t *transfer)
 {
-	print("JoystickController::rx_data (", joystickType_, DEC);
-	print("): ");
-	print_hexbytes((uint8_t*)transfer->buffer, transfer->length);
-
+	uint8_t *raw_buffer = (uint8_t *)transfer->buffer;
+	//print_hexbytes(raw_buffer, transfer->length);
+	
 	if (joystickType_ == XBOXONE) {
 		// Process XBOX One data
 		axis_mask_ = 0x3f;	
@@ -838,59 +871,117 @@ void JoystickController::rx_data(const Transfer_t *transfer)
 		}
 
 	} else if (joystickType_ == XBOX360) {
+		#define CHATPAD_DATA (1<<1)
+		#define CONTROLLER_DATA (1<<0)
 		// First byte appears to status - if the byte is 0x8 it is a connect or disconnect of the controller. 
 		xbox360data_t  *xb360d = (xbox360data_t *)transfer->buffer;
-		if (xb360d->state == 0x08) {
+		if (raw_buffer[0] == 0x08 && raw_buffer[3] == 0xF0) {
 			if (xb360d->id_or_type != connected_) {
 				connected_ = xb360d->id_or_type;	// remember it... 
 				if (connected_) {
-					println("XBox360w - Connected type:", connected_, HEX);
+					println("XBox360w - connected type:", connected_, HEX);
 					// rx_ep_ should be 1, 3, 5, 7 for the wireless convert to 2-5 on led
 					setLEDs(0);
 					setLEDs(2 + (rx_ep_ & 15) / 2);
-
 				} else {
 					println("XBox360w - disconnected");
 					setLEDs(0);
 				}
 			}
-		} else if((xb360d->id_or_type == 0x00) && (xb360d->controller_status & 0x1300)) {
-			  // Controller status report - Maybe we should save away and allow the user access?
-	            println("XBox360w - controllerStatus: ", xb360d->controller_status, HEX);
-        } else if(xb360d->id_or_type == 0x01) { // Lets only process report 1.
-			//const uint8_t *pbuffer = (uint8_t*)transfer->buffer;
-        	//for (uint8_t i = 0; i < transfer->length; i++) DBGPrintf("%02x ", pbuffer[i]);
-        	//DBGPrintf("\n");
-	        
-	        if (buttons != xb360d->buttons) {
-	        	buttons = xb360d->buttons;
-	        	anychange = true;
-	        }
-			axis_mask_ = 0x3f;	
-			axis_changed_mask_ = 0;	// assume none for now
 
-			for (uint8_t i = 0; i < 4; i++) {
-				if (axis[i] != xb360d->axis[i]) {
-					axis[i] = xb360d->axis[i];
-					axis_changed_mask_ |= (1 << i);
+		} else if (raw_buffer[1] == 0x00 && (raw_buffer[3] & 0b00010011) && raw_buffer[4] >= 0x22) {
+			println("XBox360w - controllerStatus: ", ((uint16_t) raw_buffer[3] << 8) | raw_buffer[4], HEX);
+
+		} else if(raw_buffer[1] == 0x00 && raw_buffer[3] == 0xF0) {
+			//To tell the host there's no more events?
+
+		} else if(raw_buffer[1] == 0x0F && raw_buffer[3] == 0xF0) {
+			//Some kind of info packet. Looks like this:
+			//00 0F 00 F0 00 CC E1 C6 D1 C0 B2 F9 91 30 00 20 18 E3 20 1D 30 03 40 01 50 01 FF FF FF 00 00 00
+			//Returned after sending xbox360w_chatpad_refresh[]
+
+		} else if(raw_buffer[1] == 0xF8) {
+			//Initial chatpad Handshake Request
+			println("Chatpad Init Sent1");
+			queue_Data_Transfer(txpipe_, xbox360w_chatpad_init, sizeof(xbox360w_chatpad_init), this);
+
+		//Controller input report.
+		//This can be controllers buttons, chatpad buttons, chatpad status
+		} else if(raw_buffer[1] & (CHATPAD_DATA | CONTROLLER_DATA)) {
+			//We have controller button data in the report
+			if (raw_buffer[1] & CONTROLLER_DATA && raw_buffer[5] == 0x13)
+			{
+				if (buttons != xb360d->buttons) {
+					buttons = xb360d->buttons;
 					anychange = true;
 				}
-			}
-			// the two triggers show up as 4 and 5
-			if (axis[4] != xb360d->lt) {
-				axis[4] = xb360d->lt;
-				axis_changed_mask_ |= (1 << 4);
-				anychange = true;
+				axis_mask_ = 0x3f;	
+				axis_changed_mask_ = 0;	// assume none for now
+
+				for (uint8_t i = 0; i < 4; i++) {
+					if (axis[i] != xb360d->axis[i]) {
+						axis[i] = xb360d->axis[i];
+						axis_changed_mask_ |= (1 << i);
+						anychange = true;
+					}
+				}
+				// the two triggers show up as 4 and 5
+				if (axis[4] != xb360d->lt) {
+					axis[4] = xb360d->lt;
+					axis_changed_mask_ |= (1 << 4);
+					anychange = true;
+				}
+
+				if (axis[5] != xb360d->rt) {
+					axis[5] = xb360d->rt;
+					axis_changed_mask_ |= (1 << 5);
+					anychange = true;
+				}
+
+				if (anychange) joystickEvent = true;
 			}
 
-			if (axis[5] != xb360d->rt) {
-				axis[5] = xb360d->rt;
-				axis_changed_mask_ |= (1 << 5);
-				anychange = true;
+			if (raw_buffer[1] & CHATPAD_DATA && raw_buffer[24] == 0x00)
+			{
+				print("Chatpad Button Status ");
+				print_hexbytes(&raw_buffer[25], 3);	
 			}
 
-			if (anychange) joystickEvent = true;
+			if (raw_buffer[1] & CHATPAD_DATA && raw_buffer[24] == 0xF0 && raw_buffer[25] == 0x03)
+			{
+				println("Chatpad Init Needed");
+				queue_Data_Transfer(txpipe_, xbox360w_chatpad_init, sizeof(xbox360w_chatpad_init), this);
+			}
+
+			if (raw_buffer[1] & CHATPAD_DATA && raw_buffer[24] == 0xF0 && raw_buffer[25] == 0x04)
+			{
+				//print("Chatpad LED Status ");
+				uint8_t leds = raw_buffer[26];
+				//print_hexbytes(&leds, 1);
+				if (leds & 0x80)
+				{
+					chatpad_led_actual[CAPSLOCK_LED] = (leds & 0x20) > 0;
+					chatpad_led_actual[GREEN_LED] = (leds & 0x08) > 0;
+					chatpad_led_actual[ORANGE_LED] = (leds & 0x10) > 0;
+					chatpad_led_actual[MESSENGER_LED] = (leds & 0x01) > 0;
+
+					for (int i = 0; i < CHATPAD_LED_MAX; i++)
+					{
+						if (chatpad_led_actual[i] != chatpad_led_wanted[i])
+						{
+							uint8_t command[sizeof(xbox360w_chatpad_led_ctrl)];
+							memcpy(command, xbox360w_chatpad_led_ctrl, sizeof(xbox360w_chatpad_led_ctrl));
+							command[3] = i | ((chatpad_led_wanted[i] > 0) << 3);
+							queue_Data_Transfer(txpipe_, command, sizeof(command), this);
+						}
+					}
+				}
+			}
+
+		} else {
+			print_hexbytes(raw_buffer, transfer->length);
 		}
+
 	} else if (joystickType_ == XBOX360_WIRED){
 		uint8_t *rx_buf = (uint8_t *)transfer->buffer;
 

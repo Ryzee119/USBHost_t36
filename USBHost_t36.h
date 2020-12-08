@@ -893,7 +893,10 @@ private:
 
 class JoystickController : public USBDriver, public USBHIDInput, public BTHIDInput {
 public:
-	JoystickController(USBHost &host) { init(); }
+	JoystickController(USBHost &host) : JoystickPeriodicTimer(this)
+		{ init(); }
+
+	USBDriverTimer JoystickPeriodicTimer;
 
 	uint16_t idVendor();
 	uint16_t idProduct();
@@ -912,6 +915,8 @@ public:
 	uint64_t axisChangeNotifyMask() {return axis_change_notify_mask_;}
 	void 	 axisChangeNotifyMask(uint64_t notify_mask) {axis_change_notify_mask_ = notify_mask;}
 
+	//Send a custom buffer of data to txpipe
+	bool sendRaw(uint8_t *data, uint8_t len);
 	// set functions functionality depends on underlying joystick. 
     bool setRumble(uint8_t lValue, uint8_t rValue, uint8_t timeout=0xff);
     // setLEDs on PS4(RGB), PS3 simple LED setting (only uses lb)
@@ -924,13 +929,26 @@ public:
 	// PS3 pair function. hack, requires that it be connect4ed by USB and we have the address of the Bluetooth dongle...
 	bool PS3Pair(uint8_t* bdaddr);
 
-	
+	//Xbox360 wireless Chatpad
+	typedef enum {CAPSLOCK_LED=0, GREEN_LED, ORANGE_LED, MESSENGER_LED, CHATPAD_LED_MAX} chatpad_led_t;
+	bool chatpad_led_changed;
+	uint8_t chatpad_led_actual[4];
+	uint8_t chatpad_led_wanted[4];
+	const uint8_t xbox360w_chatpad_led_ctrl[4] = {0x00, 0x00, 0x0C, 0x00};
+	/*const uint8_t xbox360w_green_off[4] = {0x00, 0x00, 0x0C, 0x01};
+	const uint8_t xbox360w_orange_on[4] = {0x00, 0x00, 0x0C, 0x0A};
+	const uint8_t xbox360w_orange_off[4] = {0x00, 0x00, 0x0C, 0x02};
+	const uint8_t xbox360w_messenger_on[4] = {0x00, 0x00, 0x0C, 0x0B};
+	const uint8_t xbox360w_messenger_off[4] = {0x00, 0x00, 0x0C, 0x03};
+	const uint8_t xbox360w_capslock_on[4] = {0x00, 0x00, 0x0C, 0x08};
+	const uint8_t xbox360w_caplocksoff[4] = {0x00, 0x00, 0x0C, 0x00};*/
 	
 protected:
 	// From USBDriver
 	virtual bool claim(Device_t *device, int type, const uint8_t *descriptors, uint32_t len);
 	virtual void control(const Transfer_t *transfer);
 	virtual void disconnect();
+	virtual void timer_event(USBDriverTimer *whichTimer);
 
 	// From USBHIDInput
 	virtual hidclaim_t claim_collection(USBHIDParser *driver, Device_t *dev, uint32_t topusage);
