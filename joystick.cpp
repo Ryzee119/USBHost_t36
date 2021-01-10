@@ -28,7 +28,7 @@
 #define println USBHost::println_
 
 //#define DEBUG_JOYSTICK
-#ifndef  DEBUG_JOYSTICK
+#ifdef  DEBUG_JOYSTICK
 #define DBGPrintf USBHDBGSerial.printf
 #else
 #define DBGPrintf(...) 
